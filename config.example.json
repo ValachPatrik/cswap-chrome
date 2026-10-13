@@ -1,0 +1,6 @@
+{
+  "profiles": {
+    "first.account@example.com": "Default",
+    "second.account@example.com": "Profile 1"
+  }
+}
