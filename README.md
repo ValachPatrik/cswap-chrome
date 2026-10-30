@@ -19,6 +19,7 @@ must be signed in to that account.
 ## Requirements
 
 - macOS, Google Chrome, iTerm2.
+- Or Windows, Google Chrome, Windows Terminal (`wt`), Git Bash and Python 3.12 or later.
 - `cswap` in `~/.local/bin`, with all accounts added.
 - One Chrome profile for each account, with the Claude extension signed in to that account.
 
@@ -31,6 +32,18 @@ git clone git@github.com:ValachPatrik/cswap-chrome.git ~/.local/share/cswap-chro
 
 The clone stays the install: the link in `~/.local/bin` and the launchd agent point into it.
 To update, run `git pull`.
+
+On Windows, install cswap with `uv tool install claude-swap`, then run in PowerShell:
+
+```powershell
+git clone https://github.com/ValachPatrik/cswap-chrome.git $HOME\.local\share\cswap-chrome
+& $HOME\.local\share\cswap-chrome\install.ps1
+```
+
+The installer writes a sh wrapper to `~/.local/bin/cswap-chrome`, because Claude Code runs
+hooks in Git Bash. A Task Scheduler task, `cswap-chrome-watch`, starts at logon. It runs
+`cswap_chrome.py watch`, which checks `~/.claude.json` every 2 seconds in place of launchd.
+On "Restart", the session opens again in a new Windows Terminal tab, not in its old tab.
 
 Then set the profile folder for each account in `~/.config/cswap-chrome/config.json`. To find
 the folder, open `chrome://version` in the profile and read the last part of "Profile Path".

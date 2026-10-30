@@ -116,7 +116,8 @@ class AutoRunning(unittest.TestCase):
 
     def test_starts_auto_only_when_missing(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(cc, "LOG", Path(d, "log.txt")), \
-                mock.patch.object(cc, "AUTO_LOG", Path(d, "auto.log")), mock.patch.object(cc.subprocess, "Popen") as po:
+                mock.patch.object(cc, "AUTO_LOG", Path(d, "auto.log")), mock.patch.object(cc, "IS_WINDOWS", False), \
+                mock.patch.object(cc.subprocess, "Popen") as po:
             cc.ensure_auto([f"{self.PY} /Users/u/.local/bin/cswap auto"])
             po.assert_not_called()
             cc.ensure_auto([])
@@ -126,7 +127,7 @@ class AutoRunning(unittest.TestCase):
 
 class OpenProfile(unittest.TestCase):
     def test_opens_profile_on_the_extension_side_panel(self):
-        with mock.patch.object(cc.subprocess, "run") as run:
+        with mock.patch.object(cc, "IS_WINDOWS", False), mock.patch.object(cc.subprocess, "run") as run:
             cc.open_profile("Profile 1")
         args = run.call_args.args[0]
         self.assertIn("--profile-directory=Profile 1", args)
@@ -141,6 +142,90 @@ class ClaudeAncestor(unittest.TestCase):
     def test_none_without_claude(self):
         table = {300: (1, "/bin/sh")}
         self.assertIsNone(cc.claude_ancestor(300, table.get))
+
+
+class WindowsAutoRunning(unittest.TestCase):
+    PY = r'"C:\Users\u\AppData\Roaming\uv\tools\claude-swap\Scripts\python.exe"'
+
+    def test_detects_quoted_cswap_exe_auto(self):
+        lines = [self.PY + r' "C:\Users\u\.local\bin\cswap.exe" auto --strategy consume-first --threshold 98']
+        self.assertTrue(cc.auto_running(lines))
+
+    def test_detects_unquoted_mixed_separators(self):
+        self.assertTrue(cc.auto_running([r"C:\Users\u/.local/bin/cswap.exe auto --threshold 98"]))
+
+    def test_tui_alone_is_not_auto(self):
+        self.assertFalse(cc.auto_running([self.PY + r' "C:\Users\u\.local\bin\cswap.exe"']))
+
+    def test_starts_detached_without_a_console(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(cc, "LOG", Path(d, "log.txt")), \
+                mock.patch.object(cc, "AUTO_LOG", Path(d, "auto.log")), mock.patch.object(cc, "IS_WINDOWS", True), \
+                mock.patch.object(cc.subprocess, "Popen") as po:
+            cc.ensure_auto([])
+        kwargs = po.call_args.kwargs
+        self.assertNotIn("start_new_session", kwargs)
+        self.assertEqual(kwargs["creationflags"], cc.DETACHED_FLAGS)
+        self.assertEqual(po.call_args.args[0][1:], ["auto", "--strategy", "consume-first", "--threshold", "98"])
+
+
+class WindowsClaude(unittest.TestCase):
+    def test_claude_exe_is_claude(self):
+        self.assertTrue(cc.is_claude(r"C:\Users\u\.local\bin\claude.exe"))
+
+    def test_other_exe_is_not_claude(self):
+        self.assertFalse(cc.is_claude(r"C:\Program Files\Git\usr\bin\bash.exe"))
+
+    def test_walks_up_to_claude_exe(self):
+        table = {300: (200, "python.exe"), 200: (100, "claude.exe"), 100: (4, "WindowsTerminal.exe")}
+        self.assertEqual(cc.claude_ancestor(300, table.get), 200)
+
+
+class WindowsOpenProfile(unittest.TestCase):
+    def test_runs_chrome_exe_with_profile_and_extension_page(self):
+        with mock.patch.object(cc, "IS_WINDOWS", True), mock.patch.object(cc, "chrome_exe", return_value=r"C:\c\chrome.exe"), \
+                mock.patch.object(cc.subprocess, "Popen") as po:
+            cc.open_profile("Profile 1")
+        args = po.call_args.args[0]
+        self.assertEqual(args, [r"C:\c\chrome.exe", "--profile-directory=Profile 1", cc.EXTENSION_PAGE])
+
+    def test_finds_chrome_in_the_first_existing_location(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d, "chrome.exe")
+            exe.write_text("")
+            self.assertEqual(cc.chrome_exe([Path(d, "missing.exe"), exe]), str(exe))
+
+    def test_no_chrome_is_none(self):
+        self.assertIsNone(cc.chrome_exe([Path("Z:/nope/chrome.exe")]))
+
+
+class WindowsPrompt(unittest.TestCase):
+    def test_yes_button_is_restart(self):
+        self.assertEqual(cc.popup_answer("6"), "Restart")
+
+    def test_no_and_timeout_are_ignore(self):
+        for out in ("7", "-1", ""):
+            self.assertEqual(cc.popup_answer(out), "Ignore")
+
+    def test_resume_opens_a_terminal_tab_in_the_session_directory(self):
+        args = cc.windows_resume_command("abc", r"C:\work\repo")
+        self.assertEqual(args, ["wt", "-w", "0", "new-tab", "-d", r"C:\work\repo", "claude", "--resume", "abc", cc.RESUME_MESSAGE])
+
+
+class Watch(unittest.TestCase):
+    def test_syncs_only_when_claude_json_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "claude.json")
+            p.write_text("{}")
+            with mock.patch.object(cc, "sync") as sy:
+                seen = cc.watch_step(p, None)
+                self.assertEqual(sy.call_count, 1)
+                self.assertEqual(cc.watch_step(p, seen), seen)
+                self.assertEqual(sy.call_count, 1)
+
+    def test_missing_file_does_not_sync(self):
+        with mock.patch.object(cc, "sync") as sy:
+            self.assertIsNone(cc.watch_step(Path("Z:/nope/claude.json"), None))
+        sy.assert_not_called()
 
 
 if __name__ == "__main__":
