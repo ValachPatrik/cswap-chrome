@@ -39,13 +39,13 @@ WATCH_SECONDS = 2
 
 def log(msg):
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    with LOG.open("a") as f:
+    with LOG.open("a", encoding="utf-8") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
 
 
 def read_json(path, default):
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
 
@@ -54,7 +54,7 @@ def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -70,11 +70,16 @@ def osascript(script, *args):
     return subprocess.run(["osascript", "-e", script, *args], capture_output=True, text=True)
 
 
+def powershell_command(script, args):
+    # Values travel in the environment: PowerShell also treats typographic quotes as quotes.
+    env = dict(os.environ, **{f"CSWAP_CHROME_ARG{i}": a for i, a in enumerate(args)})
+    command = f"& {{ {script} }} " + " ".join(f"$env:CSWAP_CHROME_ARG{i}" for i in range(len(args)))
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command], env
+
+
 def powershell(script, *args):
-    # The script reads its arguments from $args, so no value is spliced into the script text.
-    command = f"& {{ {script} }} " + " ".join("'" + a.replace("'", "''") + "'" for a in args)
-    return subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
-                          capture_output=True, text=True, creationflags=0x08000000)
+    command, env = powershell_command(script, args)
+    return subprocess.run(command, env=env, capture_output=True, text=True, creationflags=0x08000000)
 
 
 WIN_NOTIFY = """Add-Type -AssemblyName System.Windows.Forms
@@ -88,8 +93,8 @@ $n.Dispose()"""
 
 def notify(message):
     if IS_WINDOWS:
-        spawn_detached(["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
-                        f"& {{ {WIN_NOTIFY} }} '" + message.replace("'", "''") + "'"], subprocess.DEVNULL)
+        command, env = powershell_command(WIN_NOTIFY, [message])
+        spawn_detached(command, subprocess.DEVNULL, env)
         return
     osascript("on run argv\ndisplay notification (item 1 of argv) with title \"cswap-chrome\"\nend run", message)
 
@@ -101,13 +106,13 @@ def chrome_exe(candidates=None):
     return next((str(p) for p in candidates if p.is_file()), None)
 
 
-def spawn_detached(args, out):
-    kwargs = {"stdin": subprocess.DEVNULL, "stdout": out, "stderr": out}
+def spawn_detached(args, out, env=None):
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": out, "stderr": out, "env": env}
     if not IS_WINDOWS:
         return subprocess.Popen(args, start_new_session=True, **kwargs)
     try:
         return subprocess.Popen(args, creationflags=DETACHED_FLAGS, **kwargs)
-    except OSError:
+    except PermissionError:
         # The job object of the caller does not allow breakaway.
         return subprocess.Popen(args, creationflags=DETACHED_FLAGS & ~0x01000000, **kwargs)
 
@@ -119,8 +124,7 @@ def open_profile(profile_dir):
         if exe is None:
             log("open_profile: chrome.exe not found")
             return
-        subprocess.Popen([exe, f"--profile-directory={profile_dir}", EXTENSION_PAGE],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        spawn_detached([exe, f"--profile-directory={profile_dir}", EXTENSION_PAGE], subprocess.DEVNULL)
         return
     subprocess.run(["open", "-na", "Google Chrome", "--args", f"--profile-directory={profile_dir}", EXTENSION_PAGE], check=False)
 
@@ -148,7 +152,10 @@ def watch_step(claude_json, seen):
     except OSError:
         return seen
     if mtime != seen:
-        sync(read_json(CONFIG, {}), claude_json)
+        try:
+            sync(read_json(CONFIG, {}), claude_json)
+        except Exception as e:
+            log(f"watch: sync failed: {e!r}")
     return mtime
 
 
@@ -177,17 +184,23 @@ WIN_COMMAND_LINES = "Get-CimInstance Win32_Process | ForEach-Object { $_.Command
 
 def process_lines():
     if IS_WINDOWS:
-        return powershell(WIN_COMMAND_LINES).stdout.splitlines()
-    return subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True).stdout.splitlines()
+        result = powershell(WIN_COMMAND_LINES)
+    else:
+        result = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True)
+    lines = result.stdout.splitlines()
+    return lines if result.returncode == 0 and lines else None
 
 
 def ensure_auto(lines=None):
     if lines is None:
         lines = process_lines()
+    if lines is None:
+        log("ensure-auto: cannot read the process list; cswap auto not started")
+        return
     if auto_running(lines):
         return
     AUTO_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with AUTO_LOG.open("a") as out:
+    with AUTO_LOG.open("a", encoding="utf-8") as out:
         spawn_detached([str(CSWAP), *AUTO_ARGS], out)
     log(f"ensure-auto: started cswap {' '.join(AUTO_ARGS)}")
 
@@ -215,7 +228,11 @@ def win_process_table():
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    if snapshot in (None, wintypes.HANDLE(-1).value):
+        return {}
     table = {}
     entry = PROCESSENTRY32W()
     entry.dwSize = ctypes.sizeof(entry)
@@ -265,7 +282,9 @@ def is_claude(executable):
 
 
 def claude_ancestor(pid, parent_of=ps_parent):
-    while pid and pid > 1:
+    seen = set()
+    while pid and pid > 1 and pid not in seen:
+        seen.add(pid)
         entry = parent_of(pid)
         if entry is None:
             return None
@@ -284,7 +303,7 @@ def tty_of(pid):
 
 
 def hook():
-    event = json.load(sys.stdin)
+    event = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     if not is_not_connected(event):
         return
     session_id = event.get("session_id", "")
@@ -303,7 +322,7 @@ def hook():
     if not sync(config) and profile:
         open_profile(profile)
     if pid and tty and SESSION_ID.match(session_id):
-        with LOG.open("a") as out:
+        with LOG.open("a", encoding="utf-8") as out:
             spawn_detached(
                 [sys.executable, "-I", os.path.realpath(__file__), "prompt", session_id, str(pid), tty, event.get("cwd", "")], out)
         note = "A dialog now asks the user whether to restart this session to reconnect Chrome. Stop browser work and tell the user."
@@ -343,6 +362,9 @@ def popup_answer(stdout):
 
 
 def windows_resume_command(session_id, cwd):
+    # wt splits its command line at ";".
+    if ";" in cwd:
+        cwd = str(HOME)
     return ["wt", "-w", "0", "new-tab", "-d", cwd, "claude", "--resume", session_id, RESUME_MESSAGE]
 
 

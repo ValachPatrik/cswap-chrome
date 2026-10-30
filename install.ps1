@@ -3,8 +3,11 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = $PSScriptRoot
 $Task = 'cswap-chrome-watch'
-$Python = (Get-Command python.exe).Source
+# The WindowsApps python.exe is the Microsoft Store alias, not an interpreter.
+$Python = (Get-Command python.exe -All | Where-Object { $_.Source -notmatch 'WindowsApps' } | Select-Object -First 1).Source
+if (-not $Python) { throw 'Install Python 3.12 or later: no python.exe outside WindowsApps is on PATH.' }
 $PythonW = Join-Path (Split-Path $Python) 'pythonw.exe'
+if (-not (Test-Path $PythonW)) { $PythonW = $Python }
 $Bin = Join-Path $HOME '.local\bin'
 $ConfigDir = Join-Path $HOME '.config\cswap-chrome'
 
@@ -22,7 +25,8 @@ if (-not (Test-Path $Config)) {
 
 $Action = New-ScheduledTaskAction -Execute $PythonW -Argument "-I `"$Repo\cswap_chrome.py`" watch"
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $Task -Action $Action -Trigger $Trigger -Settings $Settings -Force | Out-Null
 Stop-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName $Task

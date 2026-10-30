@@ -211,7 +211,44 @@ class WindowsPrompt(unittest.TestCase):
         self.assertEqual(args, ["wt", "-w", "0", "new-tab", "-d", r"C:\work\repo", "claude", "--resume", "abc", cc.RESUME_MESSAGE])
 
 
+class WindowsHardening(unittest.TestCase):
+    def test_powershell_values_go_through_the_environment(self):
+        evil = "a\u2019; Start-Process calc; \u2019b"
+        with mock.patch.object(cc.subprocess, "run") as run:
+            cc.powershell("$args[0]", evil)
+        command = run.call_args.args[0][-1]
+        self.assertNotIn("calc", command)
+        self.assertIn(evil, run.call_args.kwargs["env"].values())
+
+    def test_reads_utf8_claude_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "claude.json")
+            p.write_bytes(json.dumps({"x": "\u00c1", "oauthAccount": {"emailAddress": "a@x"}}, ensure_ascii=False).encode("utf-8"))
+            self.assertEqual(cc.active_email(p), "a@x")
+
+    def test_resume_cwd_with_semicolon_falls_back_to_home(self):
+        args = cc.windows_resume_command("abc", r"C:\a;b")
+        self.assertEqual(args[5], str(cc.HOME))
+
+    def test_unreadable_process_list_starts_nothing(self):
+        with mock.patch.object(cc, "process_lines", return_value=None), mock.patch.object(cc, "LOG", Path(tempfile.gettempdir(), "cc-test-log.txt")), \
+                mock.patch.object(cc.subprocess, "Popen") as po:
+            cc.ensure_auto()
+        po.assert_not_called()
+
+    def test_parent_cycle_ends(self):
+        table = {300: (200, "a.exe"), 200: (300, "b.exe")}
+        self.assertIsNone(cc.claude_ancestor(300, table.get))
+
+
 class Watch(unittest.TestCase):
+    def test_sync_error_does_not_stop_the_watch(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "claude.json")
+            p.write_text("{}")
+            with mock.patch.object(cc, "LOG", Path(d, "log.txt")), mock.patch.object(cc, "sync", side_effect=PermissionError("busy")):
+                self.assertIsNotNone(cc.watch_step(p, None))
+
     def test_syncs_only_when_claude_json_changes(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d, "claude.json")
