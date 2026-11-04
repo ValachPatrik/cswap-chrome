@@ -20,8 +20,40 @@ must be signed in to that account.
 
 - macOS, Google Chrome, iTerm2.
 - Or Windows, Google Chrome, Windows Terminal (`wt`), Git Bash and Python 3.12 or later.
-- `cswap` in `~/.local/bin`, with all accounts added.
+- `cswap` in `~/.local/bin`, with all accounts added. See [Set up cswap](#set-up-cswap).
 - One Chrome profile for each account, with the Claude extension signed in to that account.
+
+## Set up cswap
+
+cswap is a separate project, [claude-swap](https://github.com/realiti4/claude-swap). Set it up
+before you install cswap-chrome.
+
+1. Install [uv](https://docs.astral.sh/uv/), for example with `brew install uv` on macOS.
+2. Install cswap. This puts `cswap` in `~/.local/bin`:
+
+   ```sh
+   uv tool install claude-swap
+   ```
+
+3. Add each account. Log in to Claude Code with the account (`/login`), then run:
+
+   ```sh
+   cswap add
+   ```
+
+   Do this again for each account. Do not run `/logout` between accounts: Claude Code can
+   revoke the token that cswap keeps for the account you leave.
+4. Make sure that `cswap list` shows all accounts with their usage.
+5. Optional: store the auto-switch settings that the SessionStart hook uses. Then the cswap TUI
+   and menu bar use the same settings:
+
+   ```sh
+   cswap config set autoswitch.strategy consume-first
+   cswap config set autoswitch.threshold 98
+   ```
+
+To update cswap, run `cswap upgrade`. If a token of an account expires, log in with that account
+again and run `cswap add`.
 
 ## Install
 
@@ -92,3 +124,8 @@ Add these to `~/.claude/settings.json`, unless the file already has them:
 - The dialog shows once per session in 5 minutes at most.
 - Restart works only for sessions in iTerm2. For other terminals, a notification gives the
   `claude --resume` command.
+
+## License
+
+MIT, see [LICENSE](LICENSE). cswap has its own MIT license. This repo does not include cswap
+code: it runs the `cswap` command that you install.
